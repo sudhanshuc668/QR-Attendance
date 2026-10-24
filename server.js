@@ -485,7 +485,7 @@ async function handleApi(request, response, url) {
       LEFT JOIN enrollments e ON e.student_id = u.id
       LEFT JOIN courses c ON c.id = e.course_id ${courseInstructorFilter}
       WHERE u.role = 'student' ${instructorRequest ? 'AND c.id IS NOT NULL' : ''}
-      GROUP BY u.id ORDER BY u.name`).all(dayStart, dayEnd, ...(instructorRequest ? [user.id, user.id] : []));
+      GROUP BY u.id, d.id, d.name, p.year_number ORDER BY u.name`).all(dayStart, dayEnd, ...(instructorRequest ? [user.id, user.id] : []));
     return sendJson(response, 200, { students });
   }
 
