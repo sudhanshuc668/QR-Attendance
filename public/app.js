@@ -381,6 +381,7 @@ async function renderAdmin() {
     ]);
     const courses = courseResult.courses;
     const instructors = instructorResult.instructors;
+    const inactiveInstructors = instructorResult.inactiveInstructors || [];
     departmentList = departmentResult.departments;
     app.innerHTML = `<div class="page-heading"><div><div class="eyebrow">Administration</div><h1>Welcome, ${escapeHtml(activeUser.name.split(' ')[0])}</h1><p>Add students and review attendance activity.</p></div><div class="date-chip">${escapeHtml(new Intl.DateTimeFormat(undefined, { dateStyle: 'full' }).format(new Date()))}</div></div>
       ${dailyAttendanceGraph(report)}
@@ -393,7 +394,8 @@ async function renderAdmin() {
             <div class="field"><label for="instructor-temp-password">Temporary password</label><input id="instructor-temp-password" name="temporaryPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" required><small>Instructor must change this at first sign-in.</small></div>
             <button class="btn btn-primary" type="submit">＋ Add instructor</button>
           </form>
-          <div id="admin-instructor-directory" class="instructor-directory">${renderInstructorDirectory(instructors, courses)}</div>
+          <div><div id="admin-instructor-directory" class="instructor-directory">${renderInstructorDirectory(instructors, courses)}</div>
+          <div class="inactive-instructor-section"><div class="panel-label">Inactive instructors</div><div id="admin-inactive-instructors" class="instructor-directory">${renderInactiveInstructorDirectory(inactiveInstructors, courses, instructors)}</div></div></div>
         </div>
         <form id="admin-manage-course-form" class="course-create-form"><h3>Assign a course to an instructor</h3>
           <div class="course-create-fields"><div class="field"><label for="admin-manage-course-name">Course name</label><input id="admin-manage-course-name" name="name" maxlength="100" required></div><div class="field"><label for="admin-manage-course-code">Course code</label><input id="admin-manage-course-code" name="code" maxlength="20" required></div><div class="field"><label for="admin-manage-course-instructor">Class teacher</label><select id="admin-manage-course-instructor" name="instructorId" required><option value="">Choose instructor</option>${instructors.map(item => `<option value="${item.id}">${escapeHtml(item.name)} · ${escapeHtml(item.username)}</option>`).join('')}</select></div></div>
@@ -408,7 +410,7 @@ async function renderAdmin() {
             <div class="field"><label for="student-temp-password">Temporary password</label><input id="student-temp-password" name="temporaryPassword" type="password" minlength="8" autocomplete="new-password" required><small>Student must change this at first sign-in.</small></div>
             <div class="field"><label for="student-department">Department</label><select id="student-department" name="departmentId" required>${departmentOptions()}</select></div>
             <div class="field"><label for="student-year">Year</label><select id="student-year" name="yearNumber" required>${yearOptions('', '', 'Choose year')}</select></div>
-            <div class="field"><label for="student-course">Course</label><select id="student-course" name="courseId" required><option value="">Choose course</option>${courses.map(course => `<option value="${course.id}">${escapeHtml(course.code)} · ${escapeHtml(course.name)}</option>`).join('')}</select><button class="course-add-trigger" type="button" data-course-form-target="admin-add-course-form">＋ Add a new course</button></div>
+            <div class="field"><label for="student-course">Course</label><select id="student-course" name="courseId" required><option value="">Choose course</option>${courses.filter(course => Number(course.instructor_is_active)).map(course => `<option value="${course.id}">${escapeHtml(course.code)} · ${escapeHtml(course.name)}</option>`).join('')}</select><button class="course-add-trigger" type="button" data-course-form-target="admin-add-course-form">＋ Add a new course</button></div>
             <button class="btn btn-primary" type="submit">＋ Add student</button>
           </form>
           <form id="admin-add-course-form" class="course-create-form hidden">
@@ -432,6 +434,7 @@ async function renderAdmin() {
     bindAddCourseForm('admin-add-course-form', 'student-course', { onCreated: refreshAdminInstructorDirectory });
     bindAddCourseForm('admin-manage-course-form', null, { onCreated: refreshAdminInstructorDirectory });
     document.querySelector('#add-instructor-form').addEventListener('submit', addInstructor);
+    setupAdminInstructorActions(inactiveInstructors, courses, instructors);
     document.querySelector('#add-student-form').addEventListener('submit', addStudent);
     setupAdminDepartmentManagement(departmentList);
     setupAdminStudentGroupEditor(studentResult.students);
@@ -588,23 +591,81 @@ async function addInstructorStudent(event) {
 }
 
 function renderInstructorDirectory(instructors, courses) {
-  if (!instructors.length) return '<div class="empty-list">No instructors yet. Add an instructor account to assign courses.</div>';
+  if (!instructors.length) return '<div class="empty-list">No active instructors. Add an instructor account or restore one below.</div>';
   return `<div class="instructor-directory-heading">${instructors.length} instructor${instructors.length === 1 ? '' : 's'}</div>${instructors.map(instructor => {
     const assigned = courses.filter(course => Number(course.instructor_id) === Number(instructor.id));
-    return `<article class="instructor-directory-card"><div class="instructor-directory-person"><strong>${escapeHtml(instructor.name)}</strong><span>@${escapeHtml(instructor.username || '')}</span></div><div class="instructor-course-list">${assigned.length ? assigned.map(course => `<span class="instructor-course-chip"><strong>${escapeHtml(course.code)}</strong> · ${escapeHtml(course.name)}</span>`).join('') : '<span class="instructor-unassigned">No courses assigned yet</span>'}</div></article>`;
+    return `<article class="instructor-directory-card"><div class="instructor-directory-person"><strong>${escapeHtml(instructor.name)}</strong><span>@${escapeHtml(instructor.username || '')}</span></div><div class="instructor-course-list">${assigned.length ? assigned.map(course => `<span class="instructor-course-chip"><strong>${escapeHtml(course.code)}</strong> · ${escapeHtml(course.name)}</span>`).join('') : '<span class="instructor-unassigned">No courses assigned yet</span>'}</div><button class="btn btn-outline instructor-deactivate" type="button" data-deactivate-instructor="${instructor.id}">Deactivate</button></article>`;
   }).join('')}`;
+}
+
+function renderInactiveInstructorDirectory(instructors, courses, activeInstructors) {
+  if (!instructors.length) return '<div class="instructor-unassigned">No inactive instructors.</div>';
+  return instructors.map(instructor => {
+    const assigned = courses.filter(course => Number(course.instructor_id) === Number(instructor.id));
+    const assignments = assigned.length ? assigned.map(course => `<div class="inactive-course-row"><span><strong>${escapeHtml(course.code)}</strong> · ${escapeHtml(course.name)}</span><div class="reassign-course-controls"><label class="sr-only" for="reassign-course-${course.id}">New instructor for ${escapeHtml(course.name)}</label><select id="reassign-course-${course.id}" data-reassign-select="${course.id}"><option value="">Choose active instructor</option>${activeInstructors.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join('')}</select><button class="btn btn-outline" type="button" data-reassign-course="${course.id}" ${activeInstructors.length ? '' : 'disabled'}>Reassign</button></div></div>`).join('') : '<span class="instructor-unassigned">No courses assigned.</span>';
+    return `<article class="instructor-directory-card"><div class="instructor-directory-person"><strong>${escapeHtml(instructor.name)}</strong><span>@${escapeHtml(instructor.username)} · inactive</span></div><div class="inactive-course-list">${assignments}</div><button class="btn btn-outline instructor-restore" type="button" data-restore-instructor="${instructor.id}">Restore instructor</button></article>`;
+  }).join('');
+}
+
+function setupAdminInstructorActions(inactiveInstructors, courses, activeInstructors) {
+  document.querySelectorAll('[data-deactivate-instructor]').forEach(button => button.addEventListener('click', async () => {
+    const instructorId = Number(button.dataset.deactivateInstructor);
+    const instructor = activeInstructors.find(item => Number(item.id) === instructorId);
+    if (!instructor) return;
+    const courseCount = courses.filter(course => Number(course.instructor_id) === instructorId).length;
+    const confirmed = await confirmDialog(`Deactivate ${instructor.name}?`, `They will lose access immediately and any active sessions will end. Their ${courseCount} assigned course${courseCount === 1 ? '' : 's'}, student enrollments, and attendance history will remain. You can reassign courses or restore the account later.`, 'Deactivate instructor', 'Cancel');
+    if (!confirmed) return;
+    button.disabled = true;
+    try {
+      const result = await api(`/api/admin/instructors/${instructorId}`, { method: 'DELETE' });
+      showToast(`${instructor.name} was deactivated. ${result.endedSessions} active session${result.endedSessions === 1 ? '' : 's'} ended.`);
+      await renderAdmin();
+    } catch (error) { button.disabled = false; showToast(error.message, true); }
+  }));
+  document.querySelectorAll('[data-restore-instructor]').forEach(button => button.addEventListener('click', async () => {
+    const instructorId = Number(button.dataset.restoreInstructor);
+    const instructor = inactiveInstructors.find(item => Number(item.id) === instructorId);
+    if (!instructor) return;
+    button.disabled = true;
+    try {
+      await api(`/api/admin/instructors/${instructorId}/restore`, { method: 'POST', body: JSON.stringify({}) });
+      showToast(`${instructor.name} was restored.`);
+      await renderAdmin();
+    } catch (error) { button.disabled = false; showToast(error.message, true); }
+  }));
+  document.querySelectorAll('[data-reassign-course]').forEach(button => button.addEventListener('click', async () => {
+    const courseId = Number(button.dataset.reassignCourse);
+    const course = courses.find(item => Number(item.id) === courseId);
+    const select = document.querySelector(`[data-reassign-select="${courseId}"]`);
+    const instructor = activeInstructors.find(item => Number(item.id) === Number(select?.value));
+    if (!course || !instructor) { showToast('Choose an active instructor first.', true); return; }
+    const confirmed = await confirmDialog(`Reassign ${course.code}?`, `${course.name} and its current roster will move to ${instructor.name}. Existing sessions and attendance history will keep their original instructor attribution.`, 'Reassign course', 'Cancel');
+    if (!confirmed) return;
+    button.disabled = true;
+    try {
+      await api(`/api/admin/courses/${courseId}/instructor`, { method: 'PATCH', body: JSON.stringify({ instructorId: instructor.id }) });
+      showToast(`${course.code} was assigned to ${instructor.name}.`);
+      await renderAdmin();
+    } catch (error) { button.disabled = false; showToast(error.message, true); }
+  }));
 }
 
 async function refreshAdminInstructorDirectory() {
   const [instructorResult, courseResult] = await Promise.all([api('/api/admin/instructors'), api('/api/admin/courses')]);
   const instructors = instructorResult.instructors;
+  const inactiveInstructors = instructorResult.inactiveInstructors || [];
   const courses = courseResult.courses;
   const directory = document.querySelector('#admin-instructor-directory');
   if (directory) directory.innerHTML = renderInstructorDirectory(instructors, courses);
+  const inactiveDirectory = document.querySelector('#admin-inactive-instructors');
+  if (inactiveDirectory) inactiveDirectory.innerHTML = renderInactiveInstructorDirectory(inactiveInstructors, courses, instructors);
+  setupAdminInstructorActions(inactiveInstructors, courses, instructors);
   ['admin-course-instructor', 'admin-manage-course-instructor'].forEach(id => {
     const select = document.querySelector(`#${id}`);
     if (select) select.innerHTML = `<option value="">Choose instructor</option>${instructors.map(item => `<option value="${item.id}">${escapeHtml(item.name)} · ${escapeHtml(item.username)}</option>`).join('')}`;
   });
+  const studentCourse = document.querySelector('#student-course');
+  if (studentCourse) studentCourse.innerHTML = `<option value="">Choose course</option>${courses.filter(course => Number(course.instructor_is_active)).map(course => `<option value="${course.id}">${escapeHtml(course.code)} · ${escapeHtml(course.name)}</option>`).join('')}`;
 }
 
 async function addInstructor(event) {
