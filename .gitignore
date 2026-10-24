@@ -1,0 +1,5 @@
+attendance.db
+attendance.db-shm
+attendance.db-wal
+__pycache__/
+*.py[cod]

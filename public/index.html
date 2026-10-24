@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f4f6fa">
+    <title>RollCall — Attendance</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a id="college-brand" class="college-brand" href="/" aria-label="Disha Institute of Science and Technology home"><img src="/dist-logo.png" alt=""><span>Disha Institute of Science and Technology</span></a>
+        <div class="topbar-actions">
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span aria-hidden="true">☾</span><span class="theme-toggle-label">Dark mode</span></button>
+          <div id="topbar-user" class="topbar-user hidden"></div>
+        </div>
+      </header>
+      <main id="app" class="main-content" aria-live="polite">
+        <div class="loading-card">Loading your attendance space…</div>
+      </main>
+      <footer class="site-footer"><span>ROLLCALL <span class="footer-dot">•</span> SMARTER CLASSROOMS</span><span>Made for learning</span></footer>
+    </div>
+    <div id="toast" class="toast" role="status"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
