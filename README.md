@@ -20,8 +20,8 @@ The database and SQLite journal files are ignored by Git. Do not commit them; th
 The repository includes a Render Docker service definition. The public service uses PostgreSQL; local development continues to use SQLite.
 
 1. Create an empty Neon PostgreSQL database and keep its connection string private.
-2. Set `DATABASE_URL`, `INITIAL_ADMIN_USERNAME`, and `INITIAL_ADMIN_PASSWORD` in a secure local environment. The admin password must be 12–128 characters.
-3. Run `npm run migrate:postgres` once, before starting the hosted app. The migration reads the local `attendance.db`, preserves non-demo accounts and related records, and creates the initial admin. It excludes the built-in demo usernames and their linked sample data. It prints record counts only.
+2. From PowerShell in the repository folder, run `./scripts/migrate-postgres-securely.ps1`. It prompts for the Neon connection string and initial admin password without echoing them, and prompts for the admin username. The password must be 12–128 characters.
+3. The migration reads the local `attendance.db`, preserves non-demo accounts and related records, and creates the initial admin. It excludes the built-in demo usernames and their linked sample data. It prints record counts only and refuses to write into a non-empty application database.
 4. Connect this GitHub repository to Render using `render.yaml`. Set the same database and initial-admin secrets in Render; Render generates `QR_SECRET` through the blueprint. Never commit or share these values.
 
 The migration refuses to write into a PostgreSQL database that already contains application data. Back up `attendance.db` before migration. Keep it local and private.
