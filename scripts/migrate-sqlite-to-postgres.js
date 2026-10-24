@@ -44,7 +44,16 @@ async function migrate() {
     (SELECT COUNT(*) FROM student_profiles) AS profiles,
     (SELECT COUNT(*) FROM class_sessions) AS sessions,
     (SELECT COUNT(*) FROM attendance) AS attendance`);
-  if (Object.values(occupied.rows[0]).some(value => Number(value) > 0)) {
+  const nonDepartmentData = Object.entries(occupied.rows[0])
+    .filter(([table]) => table !== 'departments')
+    .some(([, value]) => Number(value) > 0);
+  const existingDepartments = await pool.query('SELECT name, year_count FROM departments');
+  const startupDepartments = ['BCA', 'BBA', 'B.Com', 'B.Sc'];
+  const startupDepartmentNames = new Set(startupDepartments);
+  const onlyRenderStartupDepartments = existingDepartments.rows.length === startupDepartments.length &&
+    existingDepartments.rows.every((department, index) =>
+      startupDepartmentNames.has(department.name) && Number(department.year_count) === 3);
+  if (nonDepartmentData || (existingDepartments.rowCount && !onlyRenderStartupDepartments)) {
     throw new Error('Target database already contains attendance data. Migration stopped without changing it.');
   }
 
@@ -64,6 +73,12 @@ async function migrate() {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Render may have started the app before migration and inserted only its four
+    // built-in departments. Remove those inside the import transaction so failed
+    // migrations leave the target unchanged.
+    if (onlyRenderStartupDepartments) {
+      await client.query('DELETE FROM departments WHERE name = ANY($1::text[])', [startupDepartments]);
+    }
     for (const item of keptUsers) {
       await client.query(insertSql('users', ['id', 'name', 'username', 'password_hash', 'role', 'must_change_password']),
         [item.id, item.name, item.username, item.password_hash, item.role, item.must_change_password ?? 0]);
