@@ -1,5 +1,10 @@
 attendance.db
 attendance.db-shm
 attendance.db-wal
+node_modules/
+.env
+.env.*
+!.env.example
+npm-debug.log*
 __pycache__/
 *.py[cod]

@@ -310,19 +310,13 @@ function renderLogin(errorMessage = '') {
       <section class="login-card">
         <div class="panel-label">Welcome back</div>
         <h2>Sign in to RollCall</h2>
-        <p class="subheading">Use a demo account to continue.</p>
+        <p class="subheading">Sign in with your college account to continue.</p>
         <form id="login-form">
           <div class="field"><label for="username">Username or roll number</label><input id="username" name="username" autocomplete="username" placeholder="Enter username or roll number" required></div>
           <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required></div>
           ${errorMessage ? `<div class="login-error" role="alert">${escapeHtml(errorMessage)}</div>` : ''}
           <button class="btn btn-primary btn-block" type="submit">Sign in <span aria-hidden="true">→</span></button>
         </form>
-        <div class="demo-box">
-          <div class="demo-box-title">Demo accounts</div>
-          <div class="demo-row"><span>Instructor</span><strong>instructor / teach123</strong></div>
-          <div class="demo-row"><span>Student</span><strong>student1 / student123</strong></div>
-          <div class="demo-row"><span>Admin</span><strong>admin / admin123</strong></div>
-        </div>
       </section>
     </section>`;
   document.querySelector('#login-form').addEventListener('submit', async event => {

@@ -4,9 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "migrate:postgres": "node scripts/migrate-sqlite-to-postgres.js"
   },
   "engines": {
     "node": ">=22.5"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
   }
 }

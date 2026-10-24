@@ -1,52 +1,49 @@
-# RollCall — Rotating QR Attendance
+# Disha Institute of Science and Technology Attendance
 
-A local classroom demo for recording attendance with QR codes that refresh every 10 seconds. The app uses plain HTML, CSS, and JavaScript, a dependency-free Node.js HTTP server, and SQLite through Node's built-in `node:sqlite` module.
+A college attendance web app with admin and instructor dashboards, student rosters, live rotating QR check-in, and attendance reports.
 
-## Requirements
+## Local development
 
-- Node.js 22.5 or newer (the included environment uses Node 24).
-- Python 3.9 or newer and pip, used only to render QR codes as SVG.
-
-## Run locally
+Requirements: Node.js 22.5 or newer, Python 3.9 or newer, and pip.
 
 ```powershell
 python -m pip install -r requirements.txt
-node server.js
+npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Node creates `attendance.db` in the project directory the first time it starts and seeds the sample users and course.
+Open [http://localhost:3000](http://localhost:3000). Local development uses SQLite in `attendance.db` and seeds demo accounts only when no users are present. Demo credentials are for local development only and must never be used on a public deployment.
 
-### Demo accounts
+The database and SQLite journal files are ignored by Git. Do not commit them; they may contain student information.
 
-| Role | Username | Password |
-| --- | --- | --- |
-| Admin | `admin` | `admin123` |
-| Instructor | `instructor` | `teach123` |
-| Student | `student1` | `student123` |
-| Student | `student2` | `student223` |
-| Student | `student3` | `student323` |
-| Student | `student4` | `student423` |
-| Student | `student5` | `student523` |
-| Student | `student6` | `student623` |
+## Public deployment
 
-## Phone scanning on the same Wi-Fi
+The repository includes a Render Docker service definition. The public service uses PostgreSQL; local development continues to use SQLite.
 
-The server listens on all network interfaces. Find the laptop's local IP address, then open `http://<laptop-ip>:3000` on the phone once so the browser accepts the site. The QR code link uses the host address from the instructor's page. Keep both devices on the same Wi-Fi and allow Node through the laptop's firewall if prompted. This local HTTP setup is intended for a classroom demo, not public internet hosting.
+1. Create an empty Neon PostgreSQL database and keep its connection string private.
+2. Set `DATABASE_URL`, `INITIAL_ADMIN_USERNAME`, and `INITIAL_ADMIN_PASSWORD` in a secure local environment. The admin password must be 12–128 characters.
+3. Run `npm run migrate:postgres` once, before starting the hosted app. The migration reads the local `attendance.db`, preserves non-demo accounts and related records, and creates the initial admin. It excludes the built-in demo usernames and their linked sample data. It prints record counts only.
+4. Connect this GitHub repository to Render using `render.yaml`. Set the same database and initial-admin secrets in Render; Render generates `QR_SECRET` through the blueprint. Never commit or share these values.
 
-## What it does
+The migration refuses to write into a PostgreSQL database that already contains application data. Back up `attendance.db` before migration. Keep it local and private.
 
-- Instructors start and end a class session, display a self-refreshing QR code, review the roster, manually mark students present, download a CSV, and add student accounts to their own courses.
-- Students scan the QR code with their phone camera. The link opens the app; after sign-in, the student verifies their face and the server checks the token before recording attendance.
-- Students choose their department and year after signing in. BCA, BBA, B.Com, and B.Sc are seeded with three year groups each; instructors can add more departments with one to six years.
-- Instructors can filter a session roster and its CSV export by department and year. The attendance session itself still covers the full course roster.
-- Instructor and admin dashboards let you select a department, then a year group (First Year, Second Year, Third Year, and so on) to view that group’s students, how many are present today, and how many are not yet marked. Instructor views only include their own courses.
-- Instructors and admins can add students with a name, unique roll number, department/year, course, and temporary password. Students enroll their face after signing in, on the device and browser they will use for attendance.
-- New students sign in with their roll number and temporary password, then must change the password before using attendance.
-- After a QR scan and sign-in, students take a fresh selfie and verify it against their local face template before attendance is recorded. The template stays in that browser's local storage; selfies and templates are not sent to the server. Remove an enrollment from the student face check-in panel. The face library and models load from jsDelivr, which requires internet access the first time.
-- Face matching is a classroom-project demo with no liveness or reliable anti-spoofing. Because the template stays on the device, the server cannot independently verify a match; a technically capable user can bypass this client-side check. Instructors can manually mark attendance if face check-in fails.
-- The QR token is signed by the server and expires at the next 10-second boundary. The server's clock is authoritative.
-- Passwords are salted and hashed. Authentication cookies are `HttpOnly` and `SameSite=Lax`.
+Render’s free web service may sleep after inactivity, so the first request can take longer and in-memory sign-in sessions may need to be recreated after a restart. Neon’s free database plan has storage and compute limits; check the provider dashboards for current usage and plan details.
 
-## Data and configuration
+The website URL is publicly reachable, but student, instructor, and admin data stays behind sign-in. Production does not seed the local demo accounts. The admin signs in with the configured initial credentials and must set a new password at first sign-in.
 
-The SQLite database is stored in `attendance.db`. To start a fresh demo, stop the server and delete that file; it will be reseeded on next launch. `PORT` and `HOST` can be configured with environment variables. Set `QR_SECRET` to a long random value for a stable signing secret; without it, tokens are still validated but existing QR tokens stop working when the server restarts.
+## Features
+
+- Instructors can manage their assigned courses and students, run sessions, display rotating QR codes, review attendance, and export rosters.
+- Students scan the QR code and sign in; attendance is recorded automatically when the active session and course enrollment are valid.
+- Admins can create instructors and students, assign courses, change a student’s department/year, manage departments, and review attendance.
+- Departments have year groups; admins and instructors can filter students and attendance by department and year.
+- The login and dashboard use Disha Institute of Science and Technology branding, with light and dark themes.
+- Passwords are salted and hashed. Production session cookies use `HttpOnly`, `SameSite=Lax`, and `Secure` over HTTPS.
+
+## Configuration
+
+- `PORT`: server port; Render provides this automatically.
+- `HOST`: bind address (defaults to `0.0.0.0`).
+- `DATABASE_URL`: when set, use PostgreSQL; otherwise use local SQLite.
+- `QR_SECRET`: stable, private QR-token signing secret. Render generates one from the blueprint.
+- `INITIAL_ADMIN_USERNAME`, `INITIAL_ADMIN_PASSWORD`, `INITIAL_ADMIN_NAME`: create the initial admin in a new PostgreSQL database. Set the username and password in secret settings. The password must be 12–128 characters.
+- `SQLITE_PATH`: optional alternate path for the local SQLite database.
