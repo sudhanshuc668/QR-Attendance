@@ -31,7 +31,8 @@ const SQLITE_SCHEMA = `
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('instructor', 'student', 'admin')),
     must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1)),
-    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    is_archived INTEGER NOT NULL DEFAULT 0 CHECK (is_archived IN (0, 1))
   );
   CREATE TABLE IF NOT EXISTS courses (
     id INTEGER PRIMARY KEY,
@@ -181,6 +182,13 @@ function migrateLocalUserActiveFlag() {
   }
 }
 
+function migrateLocalUserArchiveFlag() {
+  const columns = sqliteDatabase.prepare('PRAGMA table_info(users)').all().map(column => column.name);
+  if (!columns.includes('is_archived')) {
+    sqliteDatabase.exec('ALTER TABLE users ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0 CHECK (is_archived IN (0, 1))');
+  }
+}
+
 async function seedLocalDemoDatabase() {
   const existing = Number((await database.prepare('SELECT COUNT(*) AS count FROM users').get()).count);
   if (existing) return;
@@ -226,6 +234,7 @@ async function initializeDatabase() {
   sqliteDatabase.exec(SQLITE_SCHEMA);
   migrateLocalUsersForAdminRole();
   migrateLocalUserActiveFlag();
+  migrateLocalUserArchiveFlag();
   sqliteDatabase.exec('DROP TABLE IF EXISTS face_templates');
   for (const name of ['BCA', 'BBA', 'B.Com', 'B.Sc']) {
     sqliteDatabase.prepare('INSERT OR IGNORE INTO departments (name, year_count) VALUES (?, 3)').run(name);
@@ -266,12 +275,13 @@ async function currentUser(request) {
     if (value) sessions.delete(value);
     return null;
   }
-  const user = await database.prepare('SELECT id, name, username, role, must_change_password AS "mustChangePassword", is_active FROM users WHERE id = ?').get(session.userId);
-  if (!user || !Number(user.is_active)) {
+  const user = await database.prepare('SELECT id, name, username, role, must_change_password AS "mustChangePassword", is_active, is_archived FROM users WHERE id = ?').get(session.userId);
+  if (!user || !Number(user.is_active) || Number(user.is_archived)) {
     sessions.delete(value);
     return null;
   }
   delete user.is_active;
+  delete user.is_archived;
   return user;
 }
 
@@ -438,7 +448,7 @@ async function handleApi(request, response, url) {
   }
 
   if (pathname === '/api/login' && method === 'POST') {
-    const user = await database.prepare('SELECT * FROM users WHERE username = ? AND is_active = 1').get(String(body.username || '').trim().toLowerCase());
+    const user = await database.prepare('SELECT * FROM users WHERE username = ? AND is_active = 1 AND is_archived = 0').get(String(body.username || '').trim().toLowerCase());
     if (!user || !verifyPassword(String(body.password || ''), user.password_hash)) return sendJson(response, 401, { error: 'Username or password is incorrect.' });
     const token = randomBytes(32).toString('base64url');
     sessions.set(token, { userId: user.id, expiresAt: Date.now() + COOKIE_TTL_MS });
@@ -518,7 +528,7 @@ async function handleApi(request, response, url) {
     if (password.length < 8 || password.length > 128) return sendJson(response, 400, { error: 'Temporary password must be 8–128 characters.' });
     const department = await database.prepare('SELECT id, year_count FROM departments WHERE id = ?').get(departmentId);
     if (!department || !Number.isInteger(yearNumber) || yearNumber < 1 || yearNumber > department.year_count) return sendJson(response, 400, { error: 'Choose a valid department and year.' });
-    const course = await database.prepare(`SELECT c.id, c.instructor_id FROM courses c JOIN users teacher ON teacher.id = c.instructor_id AND teacher.is_active = 1 WHERE c.id = ?`).get(courseId);
+    const course = await database.prepare(`SELECT c.id, c.instructor_id FROM courses c JOIN users teacher ON teacher.id = c.instructor_id AND teacher.is_active = 1 AND teacher.is_archived = 0 WHERE c.id = ?`).get(courseId);
     if (!course || (instructorRequest && course.instructor_id !== user.id)) return sendJson(response, 400, { error: 'Choose one of your courses.' });
     if (await database.prepare('SELECT id FROM users WHERE username = ?').get(rollNumber)) return sendJson(response, 409, { error: 'That roll number is already in use.' });
 
@@ -561,16 +571,17 @@ async function handleApi(request, response, url) {
 
   if (pathname === '/api/admin/courses' && method === 'GET') {
     if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });
-    const courses = await database.prepare(`SELECT c.id, c.name, c.code, c.instructor_id, u.name AS instructor_name, u.is_active AS instructor_is_active
+    const courses = await database.prepare(`SELECT c.id, c.name, c.code, c.instructor_id, u.name AS instructor_name, u.is_active AS instructor_is_active, u.is_archived AS instructor_is_archived
       FROM courses c JOIN users u ON u.id = c.instructor_id ORDER BY c.name`).all();
     return sendJson(response, 200, { courses });
   }
 
   if (pathname === '/api/admin/instructors' && method === 'GET') {
     if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });
-    const instructors = await database.prepare("SELECT id, name, username FROM users WHERE role = 'instructor' AND is_active = 1 ORDER BY name").all();
-    const inactiveInstructors = await database.prepare("SELECT id, name, username FROM users WHERE role = 'instructor' AND is_active = 0 ORDER BY name").all();
-    return sendJson(response, 200, { instructors, inactiveInstructors });
+    const instructors = await database.prepare("SELECT id, name, username FROM users WHERE role = 'instructor' AND is_active = 1 AND is_archived = 0 ORDER BY name").all();
+    const inactiveInstructors = await database.prepare("SELECT id, name, username FROM users WHERE role = 'instructor' AND is_active = 0 AND is_archived = 0 ORDER BY name").all();
+    const archivedInstructors = await database.prepare("SELECT id, name, username FROM users WHERE role = 'instructor' AND is_archived = 1 ORDER BY name").all();
+    return sendJson(response, 200, { instructors, inactiveInstructors, archivedInstructors });
   }
 
   const instructorActionMatch = pathname.match(/^\/api\/admin\/instructors\/(\d+)(?:\/(restore))?$/);
@@ -579,10 +590,10 @@ async function handleApi(request, response, url) {
     const instructorId = Number(instructorActionMatch[1]);
     const restoring = Boolean(instructorActionMatch[2]);
     if ((restoring && method !== 'POST') || (!restoring && method !== 'DELETE')) return sendJson(response, 405, { error: 'Method not allowed.' });
-    const instructor = await database.prepare("SELECT id, name, is_active FROM users WHERE id = ? AND role = 'instructor'").get(instructorId);
+    const instructor = await database.prepare("SELECT id, name, is_active, is_archived FROM users WHERE id = ? AND role = 'instructor'").get(instructorId);
     if (!instructor) return sendJson(response, 404, { error: 'Instructor not found.' });
     if (restoring) {
-      await database.prepare('UPDATE users SET is_active = 1 WHERE id = ?').run(instructorId);
+      await database.prepare('UPDATE users SET is_active = 1, is_archived = 0 WHERE id = ?').run(instructorId);
       return sendJson(response, 200, { instructor: { id: instructorId, name: instructor.name, isActive: true } });
     }
     let endedSessions = 0;
@@ -594,6 +605,21 @@ async function handleApi(request, response, url) {
     return sendJson(response, 200, { instructor: { id: instructorId, name: instructor.name, isActive: false }, endedSessions });
   }
 
+  const instructorArchiveMatch = pathname.match(/^\/api\/admin\/instructors\/(\d+)\/archive$/);
+  if (instructorArchiveMatch && method === 'POST') {
+    if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });
+    const instructorId = Number(instructorArchiveMatch[1]);
+    const instructor = await database.prepare("SELECT id, name, is_archived FROM users WHERE id = ? AND role = 'instructor'").get(instructorId);
+    if (!instructor) return sendJson(response, 404, { error: 'Instructor not found.' });
+    let endedSessions = 0;
+    await database.transaction(async tx => {
+      await tx.prepare('UPDATE users SET is_active = 0, is_archived = 1 WHERE id = ?').run(instructorId);
+      endedSessions = (await tx.prepare('UPDATE class_sessions SET ended_at = ? WHERE instructor_id = ? AND ended_at IS NULL').run(new Date().toISOString(), instructorId)).changes;
+    });
+    for (const [token, session] of sessions) if (Number(session.userId) === instructorId) sessions.delete(token);
+    return sendJson(response, 200, { instructor: { id: instructorId, name: instructor.name, isArchived: true }, endedSessions });
+  }
+
   const courseReassignMatch = pathname.match(/^\/api\/admin\/courses\/(\d+)\/instructor$/);
   if (courseReassignMatch && method === 'PATCH') {
     if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });
@@ -601,7 +627,7 @@ async function handleApi(request, response, url) {
     const instructorId = Number(body.instructorId);
     const course = await database.prepare('SELECT id, name, code FROM courses WHERE id = ?').get(courseId);
     if (!course) return sendJson(response, 404, { error: 'Course not found.' });
-    const instructor = await database.prepare("SELECT id, name FROM users WHERE id = ? AND role = 'instructor' AND is_active = 1").get(instructorId);
+    const instructor = await database.prepare("SELECT id, name FROM users WHERE id = ? AND role = 'instructor' AND is_active = 1 AND is_archived = 0").get(instructorId);
     if (!instructor) return sendJson(response, 400, { error: 'Choose an active instructor.' });
     await database.prepare('UPDATE courses SET instructor_id = ? WHERE id = ?').run(instructorId, courseId);
     return sendJson(response, 200, { course: { ...course, instructor_id: instructorId, instructor_name: instructor.name } });
@@ -645,7 +671,7 @@ async function handleApi(request, response, url) {
     let instructorId = user.id;
     if (user.role === 'admin') {
       instructorId = Number(body.instructorId);
-      if (!Number.isInteger(instructorId) || !await database.prepare("SELECT id FROM users WHERE id = ? AND role = 'instructor' AND is_active = 1").get(instructorId)) {
+      if (!Number.isInteger(instructorId) || !await database.prepare("SELECT id FROM users WHERE id = ? AND role = 'instructor' AND is_active = 1 AND is_archived = 0").get(instructorId)) {
         return sendJson(response, 400, { error: 'Choose an instructor for this course.' });
       }
     }
