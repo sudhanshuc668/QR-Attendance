@@ -42,7 +42,7 @@ If the preview or backup fails, no application records are changed. Keep the gen
 
 - Instructors can manage their assigned courses and students, run sessions, display rotating QR codes, review attendance, and export rosters.
 - Students scan the QR code and sign in; attendance is recorded automatically when the active session and course enrollment are valid.
-- Admins can create instructors and students, assign courses, change a student’s department/year, manage departments, and review attendance.
+- Admins can create instructors and students, assign courses, reset active student or instructor passwords by roll number/username, change a student’s department/year, manage departments, and review attendance.
 - Students and instructors can request password recovery from sign-in; an admin reviews each request before a one-time link is emailed to the account’s verified recovery email.
 - Users can verify a recovery email from Account security. Admins can send verification links for existing accounts after confirming the person’s identity through the college’s normal process.
 - Departments have year groups; admins and instructors can filter students and attendance by department and year.

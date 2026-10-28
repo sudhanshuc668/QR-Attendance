@@ -904,6 +904,28 @@ async function handleApi(request, response, url) {
     return sendJson(response, 200, { instructor: { id: instructorId, name: instructor.name }, mustChangePassword: true });
   }
 
+  if (pathname === '/api/admin/accounts/password' && method === 'POST') {
+    if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });
+    const role = String(body.role || '');
+    const username = String(body.username || '').trim().toLowerCase();
+    const password = String(body.temporaryPassword || '');
+    if (!['student', 'instructor'].includes(role)) return sendJson(response, 400, { error: 'Choose a student or instructor account.' });
+    if (!/^[a-z0-9][a-z0-9._/-]{1,39}$/.test(username)) return sendJson(response, 400, { error: role === 'student' ? 'Enter a valid student roll number.' : 'Enter a valid instructor username.' });
+    if (password.length < 8 || password.length > 128) return sendJson(response, 400, { error: 'Temporary password must be 8–128 characters.' });
+    const account = await database.prepare(`SELECT id, name, username FROM users
+      WHERE username = ? AND role = ? AND is_active = 1 AND is_archived = 0`).get(username, role);
+    if (!account) return sendJson(response, 404, { error: `No active ${role} account was found for that ${role === 'student' ? 'roll number' : 'username'}.` });
+    const now = new Date().toISOString();
+    await database.transaction(async tx => {
+      await tx.prepare('UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?').run(hashPassword(password), account.id);
+      await tx.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL').run(now, account.id);
+      await tx.prepare(`UPDATE password_reset_requests SET status = 'rejected', reviewed_at = ?, reviewed_by = ?
+        WHERE user_id = ? AND status IN ('pending', 'approved')`).run(now, user.id, account.id);
+    });
+    invalidateUserSessions(account.id);
+    return sendJson(response, 200, { account: { id: account.id, name: account.name, username: account.username, role }, mustChangePassword: true });
+  }
+
   const instructorActionMatch = pathname.match(/^\/api\/admin\/instructors\/(\d+)(?:\/(restore))?$/);
   if (instructorActionMatch && ['DELETE', 'POST'].includes(method)) {
     if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });

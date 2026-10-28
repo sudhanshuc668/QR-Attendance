@@ -505,6 +505,7 @@ async function renderAdmin() {
         </form>
       </section>
       <section class="panel account-recovery-panel"><div class="panel-head"><div><div class="panel-label">Account security</div><h2>Password recovery</h2><p>Verify the requester’s identity through your college process before approving a reset.</p></div></div>
+        <form id="admin-direct-password-reset-form" class="admin-recovery-email-form"><h3>Reset a student or instructor password</h3><p>Use a student’s roll number or an instructor’s username. Set a temporary password and ask them to change it at their next sign-in.</p><div class="course-create-fields"><div class="field"><label for="admin-reset-role">Account type</label><select id="admin-reset-role" name="role"><option value="student">Student</option><option value="instructor">Instructor</option></select></div><div class="field"><label id="admin-reset-username-label" for="admin-reset-username">Student roll number</label><input id="admin-reset-username" name="username" maxlength="40" pattern="[a-zA-Z0-9][a-zA-Z0-9._/-]{1,39}" autocomplete="off" required></div><div class="field"><label for="admin-reset-password">New temporary password</label><input id="admin-reset-password" name="temporaryPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></div><div class="field"><label for="admin-reset-confirm-password">Confirm temporary password</label><input id="admin-reset-confirm-password" name="confirmPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></div></div><button class="btn btn-primary" type="submit">Reset password</button></form>
         <div class="reset-request-list">${resetRequests.requests.length ? resetRequests.requests.map(request => `<article class="reset-request-row"><div><strong>${escapeHtml(request.name)}</strong><small>${escapeHtml(request.role)} · ${escapeHtml(request.username)}${request.role === 'student' ? ' (roll number)' : ''} · ${escapeHtml(request.recovery_email)}</small><small>Requested ${escapeHtml(dateLabel(request.requested_at))}</small></div><div class="reset-request-actions"><button class="btn btn-outline" type="button" data-reject-reset="${request.id}">Reject</button><button class="btn btn-primary" type="button" data-approve-reset="${request.id}">Approve and email link</button></div></article>`).join('') : '<div class="empty-list">No password reset requests are waiting for review.</div>'}</div>
         <form id="admin-recovery-email-form" class="admin-recovery-email-form"><h3>Set up a recovery email for an existing account</h3><p>Confirm the person’s identity before sending an email verification link.</p><div class="course-create-fields"><div class="field"><label for="recovery-account-select">Student or instructor</label><select id="recovery-account-select" name="userId" required><option value="">Choose account</option>${recoveryAccounts.accounts.map(account => `<option value="${account.id}">${escapeHtml(account.name)} · ${escapeHtml(account.role)} · ${escapeHtml(account.username)}${account.recovery_email_verified_at ? ' · email verified' : ''}</option>`).join('')}</select></div><div class="field"><label for="admin-recovery-email">Email address</label><input id="admin-recovery-email" name="email" type="email" maxlength="254" autocomplete="off" required></div></div><button class="btn btn-outline" type="submit">Send verification link</button></form>
       </section>
@@ -549,6 +550,32 @@ async function renderAdmin() {
 }
 
 function setupAdminPasswordRecovery(requests, accounts) {
+  const directResetForm = document.querySelector('#admin-direct-password-reset-form');
+  const resetRole = directResetForm?.querySelector('[name="role"]');
+  const resetUsernameLabel = directResetForm?.querySelector('#admin-reset-username-label');
+  resetRole?.addEventListener('change', () => {
+    if (resetUsernameLabel) resetUsernameLabel.textContent = resetRole.value === 'student' ? 'Student roll number' : 'Instructor username';
+  });
+  directResetForm?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const values = new FormData(directResetForm);
+    const role = String(values.get('role') || '');
+    const username = String(values.get('username') || '').trim();
+    const temporaryPassword = String(values.get('temporaryPassword') || '');
+    if (temporaryPassword !== String(values.get('confirmPassword') || '')) { showToast('The temporary passwords do not match.', true); return; }
+    const identifierLabel = role === 'student' ? 'roll number' : 'username';
+    const confirmed = await confirmDialog('Reset this account password?', `Confirm the person’s identity through your college process for ${role} ${identifierLabel} “${username}”. The current password will be replaced, existing sessions will be signed out, and the user must choose a new password at next sign-in.`, 'Set temporary password', 'Cancel');
+    if (!confirmed) return;
+    const button = directResetForm.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const result = await api('/api/admin/accounts/password', { method: 'POST', body: JSON.stringify({ role, username, temporaryPassword }) });
+      showToast(`${result.account.name}’s password was reset. They must change it at next sign-in.`);
+      directResetForm.reset();
+      if (resetUsernameLabel) resetUsernameLabel.textContent = 'Student roll number';
+    } catch (error) { showToast(error.message, true); }
+    finally { button.disabled = false; }
+  });
   document.querySelectorAll('[data-approve-reset]').forEach(button => button.addEventListener('click', async () => {
     const request = requests.find(item => String(item.id) === button.dataset.approveReset);
     if (!request) return;
