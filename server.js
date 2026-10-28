@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import pg from 'pg';
 import { spawnSync } from 'node:child_process';
@@ -32,7 +32,9 @@ const SQLITE_SCHEMA = `
     role TEXT NOT NULL CHECK (role IN ('instructor', 'student', 'admin')),
     must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1)),
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-    is_archived INTEGER NOT NULL DEFAULT 0 CHECK (is_archived IN (0, 1))
+    is_archived INTEGER NOT NULL DEFAULT 0 CHECK (is_archived IN (0, 1)),
+    recovery_email TEXT,
+    recovery_email_verified_at TEXT
   );
   CREATE TABLE IF NOT EXISTS courses (
     id INTEGER PRIMARY KEY,
@@ -73,6 +75,30 @@ const SQLITE_SCHEMA = `
     UNIQUE (session_id, student_id)
   );
   CREATE INDEX IF NOT EXISTS attendance_session_idx ON attendance(session_id);
+  CREATE TABLE IF NOT EXISTS recovery_email_tokens (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS password_reset_requests (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    requested_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'completed')),
+    reviewed_at TEXT,
+    reviewed_by INTEGER REFERENCES users(id)
+  );
+  CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id INTEGER PRIMARY KEY,
+    request_id INTEGER NOT NULL REFERENCES password_reset_requests(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS password_reset_requests_status_idx ON password_reset_requests(status, requested_at);
+  CREATE INDEX IF NOT EXISTS password_reset_tokens_user_idx ON password_reset_tokens(user_id);
 `;
 
 const POSTGRES_SCHEMA = readFileSync(join(ROOT, 'schema.postgres.sql'), 'utf8');
@@ -150,6 +176,79 @@ function verifyPassword(password, stored) {
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
+function hashOpaqueToken(token) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function validEmail(value) {
+  const email = String(value || '').trim().toLowerCase();
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
+}
+
+function appBaseUrl() {
+  const configured = String(process.env.APP_BASE_URL || '').trim();
+  if (configured) {
+    const parsed = new URL(configured);
+    if (parsed.protocol !== 'https:' && !(parsed.hostname === 'localhost' && parsed.protocol === 'http:')) throw new Error('APP_BASE_URL must use HTTPS (or localhost for development).');
+    return parsed.origin;
+  }
+  if (process.env.NODE_ENV === 'production') throw new Error('Set APP_BASE_URL to the public HTTPS app URL before using email recovery.');
+  return `http://localhost:${PORT}`;
+}
+
+async function sendEmail({ to, subject, text, html }) {
+  const apiKey = String(process.env.RESEND_API_KEY || '').trim();
+  const fromEmail = validEmail(process.env.MAIL_FROM_EMAIL);
+  if (!apiKey || !fromEmail) throw new Error('Email recovery is not configured. Set RESEND_API_KEY and a verified MAIL_FROM_EMAIL.');
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      from: `${String(process.env.MAIL_FROM_NAME || 'DIST Attendance').replace(/[<>\r\n]/g, '').slice(0, 80)} <${fromEmail}>`,
+      to: [to], subject, text, html,
+    }),
+  });
+  if (!response.ok) throw new Error(`Email delivery failed (${response.status}).`);
+}
+
+function invalidateUserSessions(userId) {
+  for (const [token, session] of sessions) if (Number(session.userId) === Number(userId)) sessions.delete(token);
+}
+
+function opaqueToken() {
+  return randomBytes(32).toString('base64url');
+}
+
+function tokenExpiry(minutes) {
+  return new Date(Date.now() + minutes * 60 * 1000).toISOString();
+}
+
+async function beginRecoveryEmailVerification(userId, email) {
+  const token = opaqueToken();
+  const tokenHash = hashOpaqueToken(token);
+  const expiresAt = tokenExpiry(24 * 60);
+  await database.transaction(async tx => {
+    await tx.prepare('DELETE FROM recovery_email_tokens WHERE user_id = ?').run(userId);
+    await tx.prepare('INSERT INTO recovery_email_tokens (user_id, email, token_hash, expires_at) VALUES (?, ?, ?, ?)')
+      .run(userId, email, tokenHash, expiresAt);
+  });
+  try {
+    const link = `${appBaseUrl()}/#verify-email=${token}`;
+    await sendEmail({
+      to: email,
+      subject: 'Verify your DIST Attendance recovery email',
+      text: `Use this link to verify your DIST Attendance recovery email. It expires in 24 hours and can be used once:\n\n${link}\n\nIf you did not request this, you can ignore this message.`,
+    });
+  } catch (error) {
+    await database.prepare('DELETE FROM recovery_email_tokens WHERE user_id = ? AND token_hash = ?').run(userId, tokenHash);
+    throw error;
+  }
+}
+
+function recoveryEmailVerified(user) {
+  return Boolean(user?.recovery_email && user?.recovery_email_verified_at);
+}
+
 function migrateLocalUsersForAdminRole() {
   const schema = sqliteDatabase.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get()?.sql || '';
   const columns = sqliteDatabase.prepare('PRAGMA table_info(users)').all().map(column => column.name);
@@ -188,6 +287,12 @@ function migrateLocalUserArchiveFlag() {
   if (!columns.includes('is_archived')) {
     sqliteDatabase.exec('ALTER TABLE users ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0 CHECK (is_archived IN (0, 1))');
   }
+}
+
+function migrateLocalRecoveryEmailColumns() {
+  const columns = sqliteDatabase.prepare('PRAGMA table_info(users)').all().map(column => column.name);
+  if (!columns.includes('recovery_email')) sqliteDatabase.exec('ALTER TABLE users ADD COLUMN recovery_email TEXT');
+  if (!columns.includes('recovery_email_verified_at')) sqliteDatabase.exec('ALTER TABLE users ADD COLUMN recovery_email_verified_at TEXT');
 }
 
 function migrateLocalSessionInstructorSnapshot() {
@@ -246,6 +351,7 @@ async function initializeDatabase() {
   migrateLocalUsersForAdminRole();
   migrateLocalUserActiveFlag();
   migrateLocalUserArchiveFlag();
+  migrateLocalRecoveryEmailColumns();
   migrateLocalSessionInstructorSnapshot();
   sqliteDatabase.exec('DROP TABLE IF EXISTS face_templates');
   for (const name of ['BCA', 'BBA', 'B.Com', 'B.Sc']) {
@@ -459,6 +565,84 @@ async function handleApi(request, response, url) {
     try { body = await readBody(request); } catch (error) { return sendJson(response, 400, { error: error.message }); }
   }
 
+  if (pathname === '/api/recovery-email/verify' && method === 'POST') {
+    const token = String(body.token || '');
+    if (token.length < 32 || token.length > 128) return sendJson(response, 400, { error: 'This verification link is invalid or expired.' });
+    const tokenHash = hashOpaqueToken(token);
+    const record = await database.prepare('SELECT user_id, email, expires_at FROM recovery_email_tokens WHERE token_hash = ?').get(tokenHash);
+    if (!record || new Date(record.expires_at).getTime() <= Date.now()) return sendJson(response, 400, { error: 'This verification link is invalid or expired.' });
+    const now = new Date().toISOString();
+    await database.transaction(async tx => {
+      const consumed = await tx.prepare('DELETE FROM recovery_email_tokens WHERE token_hash = ? AND expires_at > ?').run(tokenHash, now);
+      if (!consumed.changes) throw new Error('Verification token was already used or expired.');
+      await tx.prepare('UPDATE users SET recovery_email = ?, recovery_email_verified_at = ? WHERE id = ?').run(record.email, now, record.user_id);
+      await tx.prepare(`UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL`).run(now, record.user_id);
+      await tx.prepare(`UPDATE password_reset_requests SET status = 'rejected', reviewed_at = ? WHERE user_id = ? AND status = 'approved'`).run(now, record.user_id);
+    });
+    return sendJson(response, 200, { message: 'Recovery email verified. You can now request a password reset.' });
+  }
+
+  if (pathname === '/api/password-reset/request' && method === 'POST') {
+    try { appBaseUrl(); } catch (error) { return sendJson(response, 503, { error: error.message }); }
+    if (!String(process.env.RESEND_API_KEY || '').trim() || !validEmail(process.env.MAIL_FROM_EMAIL)) {
+      return sendJson(response, 503, { error: 'Password recovery email is temporarily unavailable. Please contact your administrator.' });
+    }
+    const role = String(body.accountType || '');
+    const username = String(body.username || '').trim().toLowerCase();
+    const rollNumber = String(body.rollNumber || '').trim().toLowerCase();
+    if (!['student', 'instructor'].includes(role) || !/^[a-z0-9][a-z0-9._/-]{1,39}$/.test(username) || (role === 'student' && rollNumber !== username)) {
+      return sendJson(response, 200, { message: 'If this account is eligible, its reset request will be sent for admin review. If you do not receive a reset email, contact your administrator.' });
+    }
+    const account = await database.prepare(`SELECT id, recovery_email, recovery_email_verified_at
+      FROM users WHERE username = ? AND role = ? AND is_active = 1 AND is_archived = 0`).get(username, role);
+    if (account && recoveryEmailVerified(account)) {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const now = new Date().toISOString();
+      const recent = await database.prepare(`SELECT r.id FROM password_reset_requests r WHERE r.user_id = ? AND r.requested_at >= ? AND (
+        r.status IN ('pending', 'rejected', 'completed') OR
+        (r.status = 'approved' AND EXISTS (SELECT 1 FROM password_reset_tokens t WHERE t.request_id = r.id AND t.used_at IS NULL AND t.expires_at > ?))
+      ) LIMIT 1`).get(account.id, since, now);
+      if (!recent) {
+        await database.prepare(`INSERT INTO password_reset_requests (user_id, requested_at, status) VALUES (?, ?, 'pending')`)
+          .run(account.id, new Date().toISOString());
+      }
+    }
+    return sendJson(response, 200, { message: 'If this account is eligible, its reset request will be sent for admin review. If you do not receive a reset email, contact your administrator.' });
+  }
+
+  if (pathname === '/api/password-reset/complete' && method === 'POST') {
+    const token = String(body.token || '');
+    const newPassword = String(body.newPassword || '');
+    if (newPassword.length < 8 || newPassword.length > 128) return sendJson(response, 400, { error: 'Choose a password between 8 and 128 characters.' });
+    if (token.length < 32 || token.length > 128) return sendJson(response, 400, { error: 'This reset link is invalid or expired.' });
+    const tokenHash = hashOpaqueToken(token);
+    const now = new Date().toISOString();
+    let userId;
+    try {
+      await database.transaction(async tx => {
+        const reset = await tx.prepare(`SELECT id, request_id, user_id FROM password_reset_tokens
+          WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`).get(tokenHash, now);
+        if (!reset) throw new Error('invalid-reset-link');
+        const consumed = await tx.prepare(`UPDATE password_reset_tokens SET used_at = ?
+          WHERE id = ? AND used_at IS NULL AND expires_at > ?`).run(now, reset.id, now);
+        if (!consumed.changes) throw new Error('invalid-reset-link');
+        const changed = await tx.prepare(`UPDATE users SET password_hash = ?, must_change_password = 0
+          WHERE id = ? AND is_active = 1 AND is_archived = 0`).run(hashPassword(newPassword), reset.user_id);
+        if (!changed.changes) throw new Error('invalid-reset-link');
+        const requestUpdate = await tx.prepare(`UPDATE password_reset_requests SET status = 'completed'
+          WHERE id = ? AND user_id = ? AND status = 'approved'`).run(reset.request_id, reset.user_id);
+        if (!requestUpdate.changes) throw new Error('invalid-reset-link');
+        await tx.prepare(`UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL`).run(now, reset.user_id);
+        userId = Number(reset.user_id);
+      });
+    } catch (error) {
+      if (error.message === 'invalid-reset-link') return sendJson(response, 400, { error: 'This reset link is invalid, expired, or already used.' });
+      throw error;
+    }
+    invalidateUserSessions(userId);
+    return sendJson(response, 200, { message: 'Password reset. You can sign in with your new password.' });
+  }
+
   if (pathname === '/api/login' && method === 'POST') {
     const user = await database.prepare('SELECT * FROM users WHERE username = ? AND is_active = 1 AND is_archived = 0').get(String(body.username || '').trim().toLowerCase());
     if (!user || !verifyPassword(String(body.password || ''), user.password_hash)) return sendJson(response, 401, { error: 'Username or password is incorrect.' });
@@ -499,6 +683,111 @@ async function handleApi(request, response, url) {
 
   if (user.mustChangePassword && pathname !== '/api/logout') {
     return sendJson(response, 403, { error: 'Change your temporary password before continuing.' });
+  }
+
+  if (pathname === '/api/me/recovery-email' && method === 'GET') {
+    const account = await database.prepare('SELECT recovery_email, recovery_email_verified_at FROM users WHERE id = ?').get(user.id);
+    return sendJson(response, 200, { email: account?.recovery_email || '', verified: Boolean(account?.recovery_email_verified_at) });
+  }
+
+  if (pathname === '/api/me/recovery-email' && method === 'POST') {
+    const email = validEmail(body.email);
+    if (!email) return sendJson(response, 400, { error: 'Enter a valid email address.' });
+    const account = await database.prepare('SELECT recovery_email, recovery_email_verified_at FROM users WHERE id = ?').get(user.id);
+    if (account?.recovery_email === email && account?.recovery_email_verified_at) return sendJson(response, 200, { message: 'That recovery email is already verified.' });
+    try {
+      await beginRecoveryEmailVerification(user.id, email);
+      return sendJson(response, 200, { message: 'A verification link has been sent to that address. Your current verified address stays active until the new one is confirmed.' });
+    } catch (error) {
+      console.error('Could not send recovery email verification:', error.message);
+      return sendJson(response, 503, { error: 'Could not send a verification email. Check the email service settings and try again.' });
+    }
+  }
+
+  if (pathname === '/api/admin/recovery-accounts' && method === 'GET') {
+    if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });
+    const accounts = await database.prepare(`SELECT id, name, username, role, is_active, is_archived,
+        recovery_email, recovery_email_verified_at
+      FROM users WHERE role IN ('student', 'instructor') ORDER BY role, name`).all();
+    return sendJson(response, 200, { accounts });
+  }
+
+  const adminRecoveryEmailMatch = pathname.match(/^\/api\/admin\/users\/(\d+)\/recovery-email$/);
+  if (adminRecoveryEmailMatch && method === 'POST') {
+    if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });
+    const accountId = Number(adminRecoveryEmailMatch[1]);
+    const email = validEmail(body.email);
+    if (!email) return sendJson(response, 400, { error: 'Enter a valid email address.' });
+    const account = await database.prepare("SELECT id FROM users WHERE id = ? AND role IN ('student', 'instructor')").get(accountId);
+    if (!account) return sendJson(response, 404, { error: 'Student or instructor account not found.' });
+    try {
+      await beginRecoveryEmailVerification(accountId, email);
+      return sendJson(response, 200, { message: 'A verification link has been sent. The address will be used for recovery only after it is confirmed.' });
+    } catch (error) {
+      console.error('Could not send admin-assisted recovery email verification:', error.message);
+      return sendJson(response, 503, { error: 'Could not send a verification email. Check the email service settings and try again.' });
+    }
+  }
+
+  if (pathname === '/api/admin/password-reset-requests' && method === 'GET') {
+    if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });
+    const requests = await database.prepare(`SELECT r.id, r.user_id, r.requested_at, u.name, u.username, u.role,
+        u.recovery_email, u.recovery_email_verified_at
+      FROM password_reset_requests r JOIN users u ON u.id = r.user_id
+      WHERE r.status = 'pending' AND u.is_active = 1 AND u.is_archived = 0
+      ORDER BY r.requested_at ASC LIMIT 100`).all();
+    return sendJson(response, 200, { requests });
+  }
+
+  const resetReviewMatch = pathname.match(/^\/api\/admin\/password-reset-requests\/(\d+)\/(approve|reject)$/);
+  if (resetReviewMatch && method === 'POST') {
+    if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });
+    const requestId = Number(resetReviewMatch[1]);
+    const action = resetReviewMatch[2];
+    const resetRequest = await database.prepare(`SELECT r.id, r.user_id, r.status, u.name, u.username, u.role,
+        u.recovery_email, u.recovery_email_verified_at, u.is_active, u.is_archived
+      FROM password_reset_requests r JOIN users u ON u.id = r.user_id WHERE r.id = ?`).get(requestId);
+    if (!resetRequest || resetRequest.status !== 'pending') return sendJson(response, 404, { error: 'Pending reset request not found.' });
+    if (action === 'reject') {
+      const rejected = await database.prepare(`UPDATE password_reset_requests SET status = 'rejected', reviewed_at = ?, reviewed_by = ? WHERE id = ? AND status = 'pending'`)
+        .run(new Date().toISOString(), user.id, requestId);
+      if (!rejected.changes) return sendJson(response, 409, { error: 'This request has already been reviewed.' });
+      return sendJson(response, 200, { message: 'Reset request rejected.' });
+    }
+    if (!resetRequest.recovery_email || !resetRequest.recovery_email_verified_at || !Number(resetRequest.is_active) || Number(resetRequest.is_archived)) {
+      return sendJson(response, 409, { error: 'The account no longer has an active, verified recovery email.' });
+    }
+    let baseUrl;
+    try { baseUrl = appBaseUrl(); } catch (error) { return sendJson(response, 503, { error: error.message }); }
+    const resetToken = opaqueToken();
+    const resetHash = hashOpaqueToken(resetToken);
+    const expiresAt = tokenExpiry(60);
+    const reviewedAt = new Date().toISOString();
+    await database.transaction(async tx => {
+      await tx.prepare('DELETE FROM password_reset_tokens WHERE user_id = ? AND used_at IS NULL').run(resetRequest.user_id);
+      await tx.prepare('INSERT INTO password_reset_tokens (request_id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)')
+        .run(requestId, resetRequest.user_id, resetHash, expiresAt);
+      const approved = await tx.prepare(`UPDATE password_reset_requests SET status = 'approved', reviewed_at = ?, reviewed_by = ? WHERE id = ? AND status = 'pending'`)
+        .run(reviewedAt, user.id, requestId);
+      if (!approved.changes) throw new Error('Reset request was already reviewed.');
+    });
+    const link = `${baseUrl}/#reset-password=${resetToken}`;
+    try {
+      await sendEmail({
+        to: resetRequest.recovery_email,
+        subject: 'Your DIST Attendance password reset link',
+        text: `Hello ${resetRequest.name},\n\nAn administrator approved your password reset request. This one-time link expires in one hour:\n\n${link}\n\nIf you did not request a reset, contact your college administrator.`,
+      });
+    } catch (error) {
+      console.error('Could not send approved password reset email:', error.message);
+      await database.transaction(async tx => {
+        await tx.prepare('DELETE FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL').run(resetHash);
+        await tx.prepare(`UPDATE password_reset_requests SET status = 'pending', reviewed_at = NULL, reviewed_by = NULL WHERE id = ? AND status = 'approved'`)
+          .run(requestId);
+      });
+      return sendJson(response, 503, { error: 'The reset email could not be sent. The request remains pending so you can retry after checking email settings.' });
+    }
+    return sendJson(response, 200, { message: `A one-time reset link was emailed to ${resetRequest.recovery_email}.` });
   }
 
   if (['/api/admin/students', '/api/instructor/students'].includes(pathname) && method === 'GET') {
@@ -594,6 +883,25 @@ async function handleApi(request, response, url) {
     const inactiveInstructors = await database.prepare("SELECT id, name, username FROM users WHERE role = 'instructor' AND is_active = 0 AND is_archived = 0 ORDER BY name").all();
     const archivedInstructors = await database.prepare("SELECT id, name, username FROM users WHERE role = 'instructor' AND is_archived = 1 ORDER BY name").all();
     return sendJson(response, 200, { instructors, inactiveInstructors, archivedInstructors });
+  }
+
+  const instructorPasswordResetMatch = pathname.match(/^\/api\/admin\/instructors\/(\d+)\/password$/);
+  if (instructorPasswordResetMatch && method === 'POST') {
+    if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });
+    const instructorId = Number(instructorPasswordResetMatch[1]);
+    const password = String(body.temporaryPassword || '');
+    if (password.length < 8 || password.length > 128) return sendJson(response, 400, { error: 'Temporary password must be 8–128 characters.' });
+    const instructor = await database.prepare("SELECT id, name FROM users WHERE id = ? AND role = 'instructor' AND is_active = 1 AND is_archived = 0").get(instructorId);
+    if (!instructor) return sendJson(response, 404, { error: 'Active instructor not found.' });
+    const now = new Date().toISOString();
+    await database.transaction(async tx => {
+      await tx.prepare('UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?').run(hashPassword(password), instructorId);
+      await tx.prepare('UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL').run(now, instructorId);
+      await tx.prepare(`UPDATE password_reset_requests SET status = 'rejected', reviewed_at = ?, reviewed_by = ?
+        WHERE user_id = ? AND status IN ('pending', 'approved')`).run(now, user.id, instructorId);
+    });
+    for (const [token, session] of sessions) if (Number(session.userId) === instructorId) sessions.delete(token);
+    return sendJson(response, 200, { instructor: { id: instructorId, name: instructor.name }, mustChangePassword: true });
   }
 
   const instructorActionMatch = pathname.match(/^\/api\/admin\/instructors\/(\d+)(?:\/(restore))?$/);

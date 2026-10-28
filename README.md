@@ -43,6 +43,8 @@ If the preview or backup fails, no application records are changed. Keep the gen
 - Instructors can manage their assigned courses and students, run sessions, display rotating QR codes, review attendance, and export rosters.
 - Students scan the QR code and sign in; attendance is recorded automatically when the active session and course enrollment are valid.
 - Admins can create instructors and students, assign courses, change a student’s department/year, manage departments, and review attendance.
+- Students and instructors can request password recovery from sign-in; an admin reviews each request before a one-time link is emailed to the account’s verified recovery email.
+- Users can verify a recovery email from Account security. Admins can send verification links for existing accounts after confirming the person’s identity through the college’s normal process.
 - Departments have year groups; admins and instructors can filter students and attendance by department and year.
 - The login and dashboard use Disha Institute of Science and Technology branding, with light and dark themes.
 - Passwords are salted and hashed. Production session cookies use `HttpOnly`, `SameSite=Lax`, and `Secure` over HTTPS.
@@ -55,3 +57,9 @@ If the preview or backup fails, no application records are changed. Keep the gen
 - `QR_SECRET`: stable, private QR-token signing secret. Render generates one from the blueprint.
 - `INITIAL_ADMIN_USERNAME`, `INITIAL_ADMIN_PASSWORD`, `INITIAL_ADMIN_NAME`: create the initial admin in a new PostgreSQL database. Set the username and password in secret settings. The password must be 12–128 characters.
 - `SQLITE_PATH`: optional alternate path for the local SQLite database.
+- `APP_BASE_URL`: public origin used for email verification and password reset links. Render uses `https://dist-attendance.onrender.com` by default.
+- `RESEND_API_KEY`: private Resend API key; required to send verification and password reset emails.
+- `MAIL_FROM_EMAIL`: sender address verified in Resend.
+- `MAIL_FROM_NAME`: optional sender display name (defaults to `DIST Attendance`).
+
+Configure Resend by verifying the sending domain/address, then set `RESEND_API_KEY` and `MAIL_FROM_EMAIL` in Render’s private environment settings. Keep these values in `.env` for local development; never commit the secrets. A recovery email must be verified before a reset request can be queued. Reset links expire after one hour and can be used once.

@@ -69,6 +69,13 @@ h1, h2, h3 { font-family: Manrope, sans-serif; color: var(--navy); }
 .btn-outline:hover { background: #f8f9fc; }
 .btn-block { width: 100%; }
 .login-error { margin: -4px 0 14px; color: #bc4b4b; font-size: 12px; }
+.forgot-password-link { width: 100%; margin-top: 10px; text-align: center; }
+.recovery-card, .password-change-card { width: min(100%, 470px); margin: 40px auto; }
+.recovery-note, .recovery-info { margin: 0 0 14px; padding: 11px 13px; border-radius: 9px; color: #526483; background: #f2f5fb; font-size: 11px; line-height: 1.6; }
+.recovery-info { color: #246b56; background: var(--green-soft); }
+.recovery-modal { width: min(470px, 100%); }
+.recovery-modal .field { margin-top: 15px; }
+.recovery-modal p strong { overflow-wrap: anywhere; }
 .demo-box { margin-top: 22px; padding: 13px 14px; border-radius: 10px; background: #f7f8fb; }
 .demo-box-title { margin-bottom: 8px; color: #8b96a8; font-size: 10px; font-weight: 800; letter-spacing: .9px; text-transform: uppercase; }
 .demo-row { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; color: #68778e; font-size: 11px; }
@@ -200,6 +207,8 @@ tr:last-child td { border-bottom: 0; }
 :root[data-theme="dark"] .scan-status.error { color: #ffb4b4; background: #402a30; }
 :root[data-theme="dark"] .modal { background: var(--surface); }
 :root[data-theme="dark"] .toast { background: #25344a; }
+:root[data-theme="dark"] .recovery-note { color: #c1cce0; background: #222f42; }
+:root[data-theme="dark"] .recovery-info { color: #8fd7b9; background: #1d3a35; }
 
 @media (max-width: 850px) {
   .login-wrap { grid-template-columns: 1fr 390px; gap: 4vw; }
@@ -238,6 +247,10 @@ tr:last-child td { border-bottom: 0; }
   .welcome-strip { padding: 19px; }
   .welcome-strip h1 { font-size: 20px; }
   .roster-toolbar { align-items: flex-end; flex-direction: column; }
+  .topbar-user { display: flex; align-items: center; gap: 5px; font-size: 10px; }
+  .topbar-user button { margin-left: 0; padding: 6px 7px; font-size: 10px; }
+  .reset-request-row { align-items: stretch; flex-direction: column; }
+  .reset-request-actions { flex-wrap: wrap; }
 }
 @media (max-width: 380px) {
   .topbar { padding-right: 12px; padding-left: 12px; }
@@ -311,7 +324,17 @@ tr:last-child td { border-bottom: 0; }
 .face-consent input { margin: 2px 0 0; accent-color: var(--blue); }
 .face-data-note { margin-top: 13px; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .face-clear { margin-top: 12px; color: var(--muted); }
-.password-change-card { width: min(100%, 470px); margin: 60px auto; }
+.account-recovery-panel { margin: 21px 0; }
+.reset-request-list { display: grid; }
+.reset-request-row { padding: 13px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--line); }
+.reset-request-row > div:first-child { min-width: 0; display: grid; gap: 4px; }
+.reset-request-row small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.reset-request-actions { display: flex; flex: none; gap: 8px; }
+.reset-request-actions .btn { min-height: 35px; padding: 0 10px; font-size: 11px; }
+.admin-recovery-email-form { margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 11px; background: var(--canvas); }
+.admin-recovery-email-form h3 { margin-bottom: 5px; font-size: 14px; }
+.admin-recovery-email-form > p { margin-bottom: 12px; color: var(--muted); font-size: 11px; }
+.admin-recovery-email-form .course-create-fields { margin-bottom: 10px; }
 .admin-student-grid { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(400px, 1.2fr); gap: 20px; align-items: start; }
 .admin-department-management { margin-top: 20px; }
 .admin-department-list { display: grid; gap: 8px; }
@@ -340,6 +363,10 @@ tr:last-child td { border-bottom: 0; }
 .instructor-deactivate, .instructor-restore { margin-top: 10px; min-height: 32px; padding: 5px 10px; font-size: 11px; }
 .instructor-deactivate { color: var(--danger, #b42318); }
 .instructor-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.admin-instructor-password-form { display: grid; gap: 10px; margin-top: 12px; padding: 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--canvas); }
+.admin-instructor-password-form .field { display: grid; gap: 5px; margin: 0; color: var(--muted); font-size: 11px; font-weight: 700; }
+.admin-instructor-password-form input { width: 100%; }
+.admin-instructor-password-form p { margin: 0; }
 .instructor-archive { margin-top: 10px; min-height: 32px; padding: 5px 10px; color: var(--danger, #b42318); font-size: 11px; }
 .instructor-archive-note { margin: 5px 0 8px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .inactive-instructor-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }

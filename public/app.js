@@ -61,7 +61,8 @@ function setUser(user) {
   activeUser = user;
   userSlot.classList.toggle('hidden', !user);
   const roleLabel = user?.role === 'instructor' ? 'Instructor' : user?.role === 'admin' ? 'Admin' : 'Student';
-  userSlot.innerHTML = user ? `<strong>${escapeHtml(user.name)}</strong><span> · ${roleLabel}</span><button id="logout-button" type="button">Sign out</button>` : '';
+  userSlot.innerHTML = user ? `<strong>${escapeHtml(user.name)}</strong><span> · ${roleLabel}</span><button id="account-security-button" type="button">Account security</button><button id="logout-button" type="button">Sign out</button>` : '';
+  document.querySelector('#account-security-button')?.addEventListener('click', openAccountSecurity);
   document.querySelector('#logout-button')?.addEventListener('click', logout);
 }
 
@@ -286,6 +287,21 @@ function showAttendanceStudentSelection(value, students) {
 }
 
 async function bootstrap() {
+  const authLink = new URLSearchParams(location.hash.slice(1));
+  const resetToken = authLink.get('reset-password');
+  const verifyToken = authLink.get('verify-email');
+  if (resetToken) {
+    return renderPasswordReset(resetToken);
+  }
+  if (verifyToken) {
+    try {
+      const result = await api('/api/recovery-email/verify', { method: 'POST', body: JSON.stringify({ token: verifyToken }) });
+      history.replaceState({}, '', `${location.pathname}${location.search}`);
+      return renderLogin('', result.message);
+    } catch (error) {
+      return renderLogin(error.message);
+    }
+  }
   try {
     const result = await api('/api/me');
     setUser(result.user);
@@ -296,7 +312,7 @@ async function bootstrap() {
   }
 }
 
-function renderLogin(errorMessage = '') {
+function renderLogin(errorMessage = '', infoMessage = '') {
   clearInterval(qrTimer);
   clearInterval(rosterRefreshTimer);
   app.innerHTML = `
@@ -315,8 +331,10 @@ function renderLogin(errorMessage = '') {
           <div class="field"><label for="username">Username or roll number</label><input id="username" name="username" autocomplete="username" placeholder="Enter username or roll number" required></div>
           <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required></div>
           ${errorMessage ? `<div class="login-error" role="alert">${escapeHtml(errorMessage)}</div>` : ''}
+          ${infoMessage ? `<div class="recovery-info" role="status">${escapeHtml(infoMessage)}</div>` : ''}
           <button class="btn btn-primary btn-block" type="submit">Sign in <span aria-hidden="true">→</span></button>
         </form>
+        <button id="forgot-password-link" class="small-link forgot-password-link" type="button">Forgot password?</button>
       </section>
     </section>`;
   document.querySelector('#login-form').addEventListener('submit', async event => {
@@ -332,6 +350,7 @@ function renderLogin(errorMessage = '') {
       renderLogin(error.message);
     }
   });
+  document.querySelector('#forgot-password-link').addEventListener('click', renderForgotPassword);
   if (pendingCheckin) {
     const username = document.querySelector('#username');
     username.setAttribute('aria-describedby', 'checkin-hint');
@@ -339,11 +358,92 @@ function renderLogin(errorMessage = '') {
   }
 }
 
+function renderForgotPassword(errorMessage = '', infoMessage = '') {
+  clearInterval(qrTimer);
+  clearInterval(rosterRefreshTimer);
+  app.innerHTML = `<section class="login-card recovery-card"><div class="panel-label">Account recovery</div><h2>Forgot password?</h2><p class="subheading">Submit a request for admin review. A reset link is sent to your verified recovery email after approval.</p>
+    <form id="forgot-password-form"><div class="field"><label for="recovery-account-type">Account type</label><select id="recovery-account-type" name="accountType"><option value="student">Student</option><option value="instructor">Instructor</option></select></div>
+      <div class="field"><label for="recovery-username">Username</label><input id="recovery-username" name="username" maxlength="40" autocomplete="username" required></div>
+      <div id="recovery-roll-field" class="field"><label for="recovery-roll-number">Roll number</label><input id="recovery-roll-number" name="rollNumber" maxlength="40" autocomplete="off" required><small>Student username and roll number are the same in this app.</small></div>
+      <div class="recovery-note">If you have not verified a recovery email, contact your administrator to set one up.</div>
+      ${errorMessage ? `<div class="login-error" role="alert">${escapeHtml(errorMessage)}</div>` : ''}${infoMessage ? `<div class="recovery-info" role="status">${escapeHtml(infoMessage)}</div>` : ''}
+      <button class="btn btn-primary btn-block" type="submit">Submit reset request</button>
+    </form><button id="back-to-login" class="small-link forgot-password-link" type="button">Back to sign in</button></section>`;
+  const form = document.querySelector('#forgot-password-form');
+  const type = document.querySelector('#recovery-account-type');
+  const rollField = document.querySelector('#recovery-roll-field');
+  type.addEventListener('change', () => {
+    const isStudent = type.value === 'student';
+    rollField.classList.toggle('hidden', !isStudent);
+    rollField.querySelector('input').required = isStudent;
+  });
+  document.querySelector('#back-to-login').addEventListener('click', () => renderLogin());
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const result = await api('/api/password-reset/request', { method: 'POST', body: JSON.stringify({
+        accountType: data.get('accountType'), username: data.get('username'), rollNumber: data.get('rollNumber'),
+      }) });
+      renderForgotPassword('', result.message);
+    } catch (error) {
+      renderForgotPassword(error.message);
+    }
+  });
+}
+
+function renderPasswordReset(token, errorMessage = '') {
+  app.innerHTML = `<section class="login-card password-change-card"><div class="panel-label">Account recovery</div><h2>Choose a new password</h2><p class="subheading">This reset link can be used once and expires one hour after it was issued.</p><form id="password-reset-form"><div class="field"><label for="reset-new-password">New password</label><input id="reset-new-password" name="newPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></div><div class="field"><label for="reset-confirm-password">Confirm new password</label><input id="reset-confirm-password" name="confirmPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></div>${errorMessage ? `<div class="login-error" role="alert">${escapeHtml(errorMessage)}</div>` : ''}<button class="btn btn-primary btn-block" type="submit">Reset password</button></form></section>`;
+  document.querySelector('#password-reset-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const newPassword = String(form.get('newPassword') || '');
+    if (newPassword !== String(form.get('confirmPassword') || '')) return renderPasswordReset(token, 'The new password and confirmation do not match.');
+    const button = event.currentTarget.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const result = await api('/api/password-reset/complete', { method: 'POST', body: JSON.stringify({ token, newPassword }) });
+      history.replaceState({}, '', `${location.pathname}${location.search}`);
+      renderLogin('', result.message);
+    } catch (error) {
+      renderPasswordReset(token, error.message);
+    }
+  });
+}
+
 async function logout() {
   clearInterval(qrTimer);
   try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch {}
   setUser(null);
   renderLogin();
+}
+
+async function openAccountSecurity() {
+  try {
+    const status = await api('/api/me/recovery-email');
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML = `<section class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="account-security-title"><div class="panel-label">Account security</div><h2 id="account-security-title">Recovery email</h2><p>Your address is used only after you confirm it. ${status.verified ? `Verified address: <strong>${escapeHtml(status.email)}</strong>.` : 'No verified recovery email is set yet.'}</p><form id="recovery-email-form"><div class="field"><label for="recovery-email-input">Email address</label><input id="recovery-email-input" name="email" type="email" maxlength="254" autocomplete="email" value="${escapeHtml(status.email)}" required></div><div id="recovery-email-result" aria-live="polite"></div><div class="modal-actions"><button class="btn btn-outline" type="button" data-close-recovery>Close</button><button class="btn btn-primary" type="submit">Send verification link</button></div></form></section>`;
+    document.body.append(backdrop);
+    backdrop.querySelector('[data-close-recovery]').addEventListener('click', () => backdrop.remove());
+    backdrop.addEventListener('click', event => { if (event.target === backdrop) backdrop.remove(); });
+    backdrop.querySelector('#recovery-email-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const submit = event.currentTarget.querySelector('button[type="submit"]');
+      submit.disabled = true;
+      try {
+        const result = await api('/api/me/recovery-email', { method: 'POST', body: JSON.stringify({ email: form.get('email') }) });
+        backdrop.querySelector('#recovery-email-result').innerHTML = `<div class="recovery-info" role="status">${escapeHtml(result.message)}</div>`;
+      } catch (error) {
+        backdrop.querySelector('#recovery-email-result').innerHTML = `<div class="login-error" role="alert">${escapeHtml(error.message)}</div>`;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  } catch (error) { showToast(error.message, true); }
 }
 
 async function renderDashboard() {
@@ -376,8 +476,8 @@ async function renderAdmin() {
   clearInterval(rosterRefreshTimer);
   app.innerHTML = '<div class="loading-card">Loading admin dashboard…</div>';
   try {
-    const [courseResult, instructorResult, departmentResult, studentResult, report, sessionResult] = await Promise.all([
-      api('/api/admin/courses'), api('/api/admin/instructors'), api('/api/departments'), api('/api/admin/students'), api('/api/reports/daily-attendance'), api('/api/admin/sessions'),
+    const [courseResult, instructorResult, departmentResult, studentResult, report, sessionResult, recoveryAccounts, resetRequests] = await Promise.all([
+      api('/api/admin/courses'), api('/api/admin/instructors'), api('/api/departments'), api('/api/admin/students'), api('/api/reports/daily-attendance'), api('/api/admin/sessions'), api('/api/admin/recovery-accounts'), api('/api/admin/password-reset-requests'),
     ]);
     const courses = courseResult.courses;
     const instructors = instructorResult.instructors;
@@ -403,6 +503,10 @@ async function renderAdmin() {
           <div class="course-create-fields"><div class="field"><label for="admin-manage-course-name">Course name</label><input id="admin-manage-course-name" name="name" maxlength="100" required></div><div class="field"><label for="admin-manage-course-code">Course code</label><input id="admin-manage-course-code" name="code" maxlength="20" required></div><div class="field"><label for="admin-manage-course-instructor">Class teacher</label><select id="admin-manage-course-instructor" name="instructorId" required><option value="">Choose instructor</option>${instructors.map(item => `<option value="${item.id}">${escapeHtml(item.name)} · ${escapeHtml(item.username)}</option>`).join('')}</select></div></div>
           <button class="btn btn-outline" type="submit">＋ Create and assign course</button>
         </form>
+      </section>
+      <section class="panel account-recovery-panel"><div class="panel-head"><div><div class="panel-label">Account security</div><h2>Password recovery</h2><p>Verify the requester’s identity through your college process before approving a reset.</p></div></div>
+        <div class="reset-request-list">${resetRequests.requests.length ? resetRequests.requests.map(request => `<article class="reset-request-row"><div><strong>${escapeHtml(request.name)}</strong><small>${escapeHtml(request.role)} · ${escapeHtml(request.username)}${request.role === 'student' ? ' (roll number)' : ''} · ${escapeHtml(request.recovery_email)}</small><small>Requested ${escapeHtml(dateLabel(request.requested_at))}</small></div><div class="reset-request-actions"><button class="btn btn-outline" type="button" data-reject-reset="${request.id}">Reject</button><button class="btn btn-primary" type="button" data-approve-reset="${request.id}">Approve and email link</button></div></article>`).join('') : '<div class="empty-list">No password reset requests are waiting for review.</div>'}</div>
+        <form id="admin-recovery-email-form" class="admin-recovery-email-form"><h3>Set up a recovery email for an existing account</h3><p>Confirm the person’s identity before sending an email verification link.</p><div class="course-create-fields"><div class="field"><label for="recovery-account-select">Student or instructor</label><select id="recovery-account-select" name="userId" required><option value="">Choose account</option>${recoveryAccounts.accounts.map(account => `<option value="${account.id}">${escapeHtml(account.name)} · ${escapeHtml(account.role)} · ${escapeHtml(account.username)}${account.recovery_email_verified_at ? ' · email verified' : ''}</option>`).join('')}</select></div><div class="field"><label for="admin-recovery-email">Email address</label><input id="admin-recovery-email" name="email" type="email" maxlength="254" autocomplete="off" required></div></div><button class="btn btn-outline" type="submit">Send verification link</button></form>
       </section>
       <div class="admin-student-grid">
         <section class="panel"><div class="panel-head"><div><div class="panel-label">New account</div><h2>Add a student</h2><p>Create an account and assign the academic group and course.</p></div></div>
@@ -436,11 +540,56 @@ async function renderAdmin() {
     bindAddCourseForm('admin-add-course-form', 'student-course', { onCreated: refreshAdminInstructorDirectory });
     bindAddCourseForm('admin-manage-course-form', null, { onCreated: refreshAdminInstructorDirectory });
     document.querySelector('#add-instructor-form').addEventListener('submit', addInstructor);
+    setupAdminPasswordRecovery(resetRequests.requests, recoveryAccounts.accounts);
     setupAdminInstructorActions(inactiveInstructors, archivedInstructors, courses, instructors);
     document.querySelector('#add-student-form').addEventListener('submit', addStudent);
     setupAdminDepartmentManagement(departmentList);
     setupAdminStudentGroupEditor(studentResult.students);
   } catch (error) { app.innerHTML = `<div class="alert">${escapeHtml(error.message)}</div>`; }
+}
+
+function setupAdminPasswordRecovery(requests, accounts) {
+  document.querySelectorAll('[data-approve-reset]').forEach(button => button.addEventListener('click', async () => {
+    const request = requests.find(item => String(item.id) === button.dataset.approveReset);
+    if (!request) return;
+    const confirmed = await confirmDialog('Approve password reset?', `Confirm the person’s identity before sending a one-time reset link to ${request.recovery_email}. The link expires in one hour.`, 'Approve and send link', 'Cancel');
+    if (!confirmed) return;
+    button.disabled = true;
+    try {
+      const result = await api(`/api/admin/password-reset-requests/${request.id}/approve`, { method: 'POST', body: '{}' });
+      showToast(result.message);
+      await renderAdmin();
+    } catch (error) { button.disabled = false; showToast(error.message, true); }
+  }));
+  document.querySelectorAll('[data-reject-reset]').forEach(button => button.addEventListener('click', async () => {
+    const request = requests.find(item => String(item.id) === button.dataset.rejectReset);
+    if (!request) return;
+    const confirmed = await confirmDialog('Reject reset request?', `No password reset email will be sent for ${request.name}.`, 'Reject request', 'Cancel');
+    if (!confirmed) return;
+    button.disabled = true;
+    try {
+      const result = await api(`/api/admin/password-reset-requests/${request.id}/reject`, { method: 'POST', body: '{}' });
+      showToast(result.message);
+      await renderAdmin();
+    } catch (error) { button.disabled = false; showToast(error.message, true); }
+  }));
+  const form = document.querySelector('#admin-recovery-email-form');
+  form?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const account = accounts.find(item => String(item.id) === String(data.get('userId')));
+    if (!account) return;
+    const confirmed = await confirmDialog('Send email verification link?', `Only continue after confirming ${account.name}’s identity through the college’s normal process. A link will be sent to the address entered below.`, 'Send verification link', 'Cancel');
+    if (!confirmed) return;
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const result = await api(`/api/admin/users/${account.id}/recovery-email`, { method: 'POST', body: JSON.stringify({ email: data.get('email') }) });
+      showToast(result.message);
+      form.reset();
+    } catch (error) { showToast(error.message, true); }
+    finally { button.disabled = false; }
+  });
 }
 
 function setupAdminDepartmentManagement(departments) {
@@ -596,7 +745,7 @@ function renderInstructorDirectory(instructors, courses) {
   if (!instructors.length) return '<div class="empty-list">No active instructors. Add an instructor account or restore one below.</div>';
   return `<div class="instructor-directory-heading">${instructors.length} instructor${instructors.length === 1 ? '' : 's'}</div>${instructors.map(instructor => {
     const assigned = courses.filter(course => Number(course.instructor_id) === Number(instructor.id));
-    return `<article class="instructor-directory-card"><div class="instructor-directory-person"><strong>${escapeHtml(instructor.name)}</strong><span>@${escapeHtml(instructor.username || '')}</span></div><div class="instructor-course-list">${assigned.length ? assigned.map(course => `<span class="instructor-course-chip"><strong>${escapeHtml(course.code)}</strong> · ${escapeHtml(course.name)}</span>`).join('') : '<span class="instructor-unassigned">No courses assigned yet</span>'}</div><div class="instructor-actions"><button class="btn btn-outline instructor-deactivate" type="button" data-deactivate-instructor="${instructor.id}">Deactivate</button><button class="btn btn-outline instructor-archive" type="button" data-archive-instructor="${instructor.id}">Delete</button></div></article>`;
+    return `<article class="instructor-directory-card"><div class="instructor-directory-person"><strong>${escapeHtml(instructor.name)}</strong><span>@${escapeHtml(instructor.username || '')}</span></div><div class="instructor-course-list">${assigned.length ? assigned.map(course => `<span class="instructor-course-chip"><strong>${escapeHtml(course.code)}</strong> · ${escapeHtml(course.name)}</span>`).join('') : '<span class="instructor-unassigned">No courses assigned yet</span>'}</div><div class="instructor-actions"><button class="btn btn-outline" type="button" data-show-instructor-password-form="${instructor.id}">Reset password</button><button class="btn btn-outline instructor-deactivate" type="button" data-deactivate-instructor="${instructor.id}">Deactivate</button><button class="btn btn-outline instructor-archive" type="button" data-archive-instructor="${instructor.id}">Delete</button></div><form class="admin-instructor-password-form hidden" data-instructor-password-form="${instructor.id}"><label class="field"><span>New temporary password</span><input type="password" name="temporaryPassword" minlength="8" maxlength="128" autocomplete="new-password" required></label><label class="field"><span>Confirm temporary password</span><input type="password" name="confirmPassword" minlength="8" maxlength="128" autocomplete="new-password" required></label><p class="instructor-archive-note">The instructor must choose a new password at next sign-in. Existing sessions and reset links will be invalidated.</p><div class="instructor-actions"><button class="btn btn-primary" type="submit">Set temporary password</button><button class="btn btn-outline" type="button" data-cancel-instructor-password="${instructor.id}">Cancel</button></div></form></article>`;
   }).join('')}`;
 }
 
@@ -611,6 +760,35 @@ function renderInstructorRecoveryDirectory(instructors, courses, activeInstructo
 }
 
 function setupAdminInstructorActions(inactiveInstructors, archivedInstructors, courses, activeInstructors) {
+  document.querySelectorAll('[data-show-instructor-password-form]').forEach(button => button.addEventListener('click', () => {
+    const instructorId = button.dataset.showInstructorPasswordForm;
+    const form = document.querySelector(`[data-instructor-password-form="${instructorId}"]`);
+    form?.classList.remove('hidden');
+    form?.querySelector('input[name="temporaryPassword"]')?.focus();
+    button.classList.add('hidden');
+  }));
+  document.querySelectorAll('[data-cancel-instructor-password]').forEach(button => button.addEventListener('click', () => {
+    const instructorId = button.dataset.cancelInstructorPassword;
+    const form = document.querySelector(`[data-instructor-password-form="${instructorId}"]`);
+    form?.reset();
+    form?.classList.add('hidden');
+    document.querySelector(`[data-show-instructor-password-form="${instructorId}"]`)?.classList.remove('hidden');
+  }));
+  document.querySelectorAll('[data-instructor-password-form]').forEach(form => form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const instructorId = Number(form.dataset.instructorPasswordForm);
+    const instructor = activeInstructors.find(item => Number(item.id) === instructorId);
+    const values = new FormData(form);
+    const temporaryPassword = String(values.get('temporaryPassword') || '');
+    if (temporaryPassword !== String(values.get('confirmPassword') || '')) { showToast('The passwords do not match.', true); return; }
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      await api(`/api/admin/instructors/${instructorId}/password`, { method: 'POST', body: JSON.stringify({ temporaryPassword }) });
+      showToast(`${instructor?.name || 'Instructor'}’s password was reset. They must change it at next sign-in.`);
+      await renderAdmin();
+    } catch (error) { submit.disabled = false; showToast(error.message, true); }
+  }));
   document.querySelectorAll('[data-deactivate-instructor]').forEach(button => button.addEventListener('click', async () => {
     const instructorId = Number(button.dataset.deactivateInstructor);
     const instructor = activeInstructors.find(item => Number(item.id) === instructorId);

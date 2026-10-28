@@ -16,3 +16,11 @@ services:
         sync: false
       - key: INITIAL_ADMIN_NAME
         value: College Administrator
+      - key: APP_BASE_URL
+        value: https://dist-attendance.onrender.com
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MAIL_FROM_EMAIL
+        sync: false
+      - key: MAIL_FROM_NAME
+        value: DIST Attendance
