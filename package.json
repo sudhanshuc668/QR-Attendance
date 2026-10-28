@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "migrate:postgres": "node scripts/migrate-sqlite-to-postgres.js"
+    "migrate:postgres": "node scripts/migrate-sqlite-to-postgres.js",
+    "instructors:remove": "node scripts/remove-instructors-from-postgres.js"
   },
   "engines": {
     "node": ">=22.5"

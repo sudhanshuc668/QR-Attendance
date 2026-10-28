@@ -702,7 +702,10 @@ async function addInstructor(event) {
     form.reset();
     await refreshAdminInstructorDirectory();
   } catch (error) {
-    showToast(error.message, true);
+    const message = error instanceof TypeError && /fetch|network/i.test(error.message)
+      ? 'Could not reach the attendance server. Check that it is running, then try again.'
+      : error.message;
+    showToast(message, true);
   } finally {
     button.disabled = false;
   }

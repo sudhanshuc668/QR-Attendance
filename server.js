@@ -61,7 +61,8 @@ const SQLITE_SCHEMA = `
     course_id INTEGER NOT NULL REFERENCES courses(id),
     instructor_id INTEGER NOT NULL REFERENCES users(id),
     started_at TEXT NOT NULL,
-    ended_at TEXT
+    ended_at TEXT,
+    instructor_name_snapshot TEXT
   );
   CREATE TABLE IF NOT EXISTS attendance (
     id INTEGER PRIMARY KEY,
@@ -189,6 +190,16 @@ function migrateLocalUserArchiveFlag() {
   }
 }
 
+function migrateLocalSessionInstructorSnapshot() {
+  const columns = sqliteDatabase.prepare('PRAGMA table_info(class_sessions)').all().map(column => column.name);
+  if (!columns.includes('instructor_name_snapshot')) {
+    sqliteDatabase.exec('ALTER TABLE class_sessions ADD COLUMN instructor_name_snapshot TEXT');
+    sqliteDatabase.exec(`UPDATE class_sessions SET instructor_name_snapshot = (
+      SELECT name FROM users WHERE users.id = class_sessions.instructor_id
+    ) WHERE instructor_name_snapshot IS NULL`);
+  }
+}
+
 async function seedLocalDemoDatabase() {
   const existing = Number((await database.prepare('SELECT COUNT(*) AS count FROM users').get()).count);
   if (existing) return;
@@ -235,6 +246,7 @@ async function initializeDatabase() {
   migrateLocalUsersForAdminRole();
   migrateLocalUserActiveFlag();
   migrateLocalUserArchiveFlag();
+  migrateLocalSessionInstructorSnapshot();
   sqliteDatabase.exec('DROP TABLE IF EXISTS face_templates');
   for (const name of ['BCA', 'BBA', 'B.Com', 'B.Sc']) {
     sqliteDatabase.prepare('INSERT OR IGNORE INTO departments (name, year_count) VALUES (?, 3)').run(name);
@@ -654,7 +666,7 @@ async function handleApi(request, response, url) {
 
   if (pathname === '/api/admin/sessions' && method === 'GET') {
     if (!requireRole(user, 'admin')) return sendJson(response, 403, { error: 'Admin access is required.' });
-    const sessions = await database.prepare(`SELECT s.*, c.name AS course_name, c.code AS course_code, u.name AS instructor_name,
+    const sessions = await database.prepare(`SELECT s.*, c.name AS course_name, c.code AS course_code, COALESCE(s.instructor_name_snapshot, u.name) AS instructor_name,
         (SELECT COUNT(*) FROM attendance a WHERE a.session_id = s.id) AS present_count,
         (SELECT COUNT(*) FROM enrollments e WHERE e.course_id = s.course_id) AS roster_count
       FROM class_sessions s JOIN courses c ON c.id = s.course_id JOIN users u ON u.id = s.instructor_id

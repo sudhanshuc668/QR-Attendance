@@ -30,6 +30,14 @@ Render’s free web service may sleep after inactivity, so the first request can
 
 The website URL is publicly reachable, but student, instructor, and admin data stays behind sign-in. Production does not seed the local demo accounts. The admin signs in with the configured initial credentials and must set a new password at first sign-in.
 
+### Replacing all instructor accounts
+
+This is a permanent hosted-database change. First deploy the current application code so it can display the saved original instructor names in session history. Install PostgreSQL command-line tools (`pg_dump`) on the computer running the migration.
+
+Run `./scripts/remove-instructors-from-postgres.ps1` for a read-only impact preview. To apply the change, run `./scripts/remove-instructors-from-postgres.ps1 -Execute`; it prompts securely for the hosted PostgreSQL URL, replacement instructor details, and then displays the live impact summary again. It creates a private database dump in the ignored `backups/` directory, then requires typing the exact instructor-deletion confirmation shown in the terminal. Do not continue unless the counts and account/course list are correct. The migration creates a replacement account that must change its temporary password, reassigns courses and sessions, preserves session history and attendance, and permanently deletes every former instructor account.
+
+If the preview or backup fails, no application records are changed. Keep the generated database dump private and store it securely.
+
 ## Features
 
 - Instructors can manage their assigned courses and students, run sessions, display rotating QR codes, review attendance, and export rosters.
